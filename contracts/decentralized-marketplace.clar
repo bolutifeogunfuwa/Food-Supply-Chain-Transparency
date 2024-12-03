@@ -1,115 +1,71 @@
-;; Decentralized Marketplace Contract
+;; Incentive System Contract
 
-(define-map listings
-  { listing-id: uint }
+(define-fungible-token eco-token)
+
+(define-map farmer-scores
+  { farmer: principal }
   {
-    seller: principal,
-    item-id: uint,
-    price: uint,
-    quantity: uint,
-    status: (string-ascii 20)
+    sustainability-score: uint,
+    ethical-score: uint,
+    total-rewards: uint
   }
 )
 
-(define-map orders
-  { order-id: uint }
-  {
-    buyer: principal,
-    listing-id: uint,
-    quantity: uint,
-    total-price: uint,
-    status: (string-ascii 20)
-  }
-)
-
-(define-data-var last-listing-id uint u0)
-(define-data-var last-order-id uint u0)
-
+(define-constant contract-owner tx-sender)
+(define-constant err-owner-only (err u100))
 (define-constant err-not-found (err u101))
-(define-constant err-unauthorized (err u102))
-(define-constant err-invalid-quantity (err u103))
 
-(define-public (create-listing (item-id uint) (price uint) (quantity uint))
-  (let
-    ((new-id (+ (var-get last-listing-id) u1)))
-    (map-set listings
-      { listing-id: new-id }
+(define-public (register-farmer (farmer principal))
+  (begin
+    (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+    (map-set farmer-scores
+      { farmer: farmer }
       {
-        seller: tx-sender,
-        item-id: item-id,
-        price: price,
-        quantity: quantity,
-        status: "active"
+        sustainability-score: u0,
+        ethical-score: u0,
+        total-rewards: u0
       }
     )
-    (var-set last-listing-id new-id)
-    (ok new-id)
+    (ok true)
   )
 )
 
-(define-public (update-listing (listing-id uint) (new-price uint) (new-quantity uint))
+(define-public (update-farmer-scores (farmer principal) (sustainability-delta int) (ethical-delta int))
   (let
-    ((listing (unwrap! (map-get? listings { listing-id: listing-id }) err-not-found)))
-    (asserts! (is-eq tx-sender (get seller listing)) err-unauthorized)
-    (map-set listings
-      { listing-id: listing-id }
-      (merge listing {
-        price: new-price,
-        quantity: new-quantity
+    ((current-scores (unwrap! (map-get? farmer-scores { farmer: farmer }) err-not-found)))
+    (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+    (map-set farmer-scores
+      { farmer: farmer }
+      {
+        sustainability-score: (max u0 (+ (get sustainability-score current-scores) sustainability-delta)),
+        ethical-score: (max u0 (+ (get ethical-score current-scores) ethical-delta)),
+        total-rewards: (get total-rewards current-scores)
+      }
+    )
+    (ok true)
+  )
+)
+
+(define-public (distribute-rewards (farmer principal) (amount uint))
+  (let
+    ((current-scores (unwrap! (map-get? farmer-scores { farmer: farmer }) err-not-found)))
+    (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+    (try! (ft-mint? eco-token amount farmer))
+    (map-set farmer-scores
+      { farmer: farmer }
+      (merge current-scores {
+        total-rewards: (+ (get total-rewards current-scores) amount)
       })
     )
     (ok true)
   )
 )
 
-(define-public (create-order (listing-id uint) (quantity uint))
-  (let
-    ((listing (unwrap! (map-get? listings { listing-id: listing-id }) err-not-found))
-     (new-id (+ (var-get last-order-id) u1))
-     (total-price (* (get price listing) quantity)))
-    (asserts! (<= quantity (get quantity listing)) err-invalid-quantity)
-    (try! (stx-transfer? total-price tx-sender (get seller listing)))
-    (map-set orders
-      { order-id: new-id }
-      {
-        buyer: tx-sender,
-        listing-id: listing-id,
-        quantity: quantity,
-        total-price: total-price,
-        status: "created"
-      }
-    )
-    (map-set listings
-      { listing-id: listing-id }
-      (merge listing {
-        quantity: (- (get quantity listing) quantity)
-      })
-    )
-    (var-set last-order-id new-id)
-    (ok new-id)
-  )
+(define-read-only (get-farmer-scores (farmer principal))
+  (map-get? farmer-scores { farmer: farmer })
 )
 
-(define-public (fulfill-order (order-id uint))
-  (let
-    ((order (unwrap! (map-get? orders { order-id: order-id }) err-not-found))
-     (listing (unwrap! (map-get? listings { listing-id: (get listing-id order) }) err-not-found)))
-    (asserts! (is-eq tx-sender (get seller listing)) err-unauthorized)
-    (map-set orders
-      { order-id: order-id }
-      (merge order {
-        status: "fulfilled"
-      })
-    )
-    (ok true)
-  )
-)
-
-(define-read-only (get-listing (listing-id uint))
-  (map-get? listings { listing-id: listing-id })
-)
-
-(define-read-only (get-order (order-id uint))
-  (map-get? orders { order-id: order-id })
+(define-read-only (get-token-balance (farmer principal))
+  (ok (ft-get-balance eco-token farmer))
 )
 
